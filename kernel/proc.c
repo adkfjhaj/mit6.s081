@@ -21,6 +21,21 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+
+uint64 getNumProc(){
+  struct proc* p;
+  uint64 count = 0;
+  for(p=proc;p<&proc[NPROC];p++){
+    acquire(&p->lock);
+    if(p->state != UNUSED){
+      count++;
+    }
+    release(&p->lock);
+  }
+  return count;
+}
+
+
 // initialize the proc table at boot time.
 void
 procinit(void)
@@ -126,7 +141,9 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
+  //--------
+  p->trace_arg=0;
+  //--------
   return p;
 }
 
@@ -294,6 +311,10 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
+  
+  //-------------------
+  np->trace_arg=p->trace_arg;
+  //-------------------
 
   release(&np->lock);
 
@@ -693,3 +714,4 @@ procdump(void)
     printf("\n");
   }
 }
+

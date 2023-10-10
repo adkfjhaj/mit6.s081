@@ -18,6 +18,9 @@
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
+
+
+// argfd(0, 0, &f) < 0 
 static int
 argfd(int n, int *pfd, struct file **pf)
 {

@@ -120,6 +120,22 @@ found:
     release(&p->lock);
     return 0;
   }
+  // produce kernel page table
+  p->kernelPgt=ukvminit();
+  if(p->pagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  // 每个kernel stack都已经被分配了在procinit中，我们不需要重新去分配，只用建立mapping
+  
+  uint64 va = KSTACK((int)(p-proc));
+  pte_t pa=kvmpa(va);
+  memset((void*)pa,0,PGSIZE);
+  if(mappages(p->kernelPgt, va, PGSIZE, pa, PTE_R | PTE_W) != 0)
+    panic("kvmmap");
+  // p->kstack = (uint64)pa;
+  p->kstack = (uint64)va;
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -129,6 +145,7 @@ found:
 
   return p;
 }
+
 
 // free a proc structure and the data hanging from it,
 // including user pages.
@@ -141,6 +158,7 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -150,6 +168,13 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  if(p->kernelPgt){
+    ukvmfree(p);
+    p->kernelPgt=0;
+  }
+  if(p->kstack)
+    p->kstack = 0;
+
 }
 
 // Create a user page table for a given process,
@@ -221,6 +246,8 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  ukvmcopy(p->pagetable,p->kernelPgt,0,p->sz);
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -243,12 +270,22 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if(n+sz>PLIC||(sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+      return -1;
+    }
+    if(ukvmcopy(p->pagetable,p->kernelPgt,p->sz,sz)!=0){
       return -1;
     }
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    if(sz!=p->sz){
+      uvmunmap(p->kernelPgt, PGROUNDUP(sz), (PGROUNDUP(p->sz) - PGROUNDUP(sz)) / PGSIZE, 0);
+      // uvmunmap(p->kernelPgt, PGROUNDUP(sz), (PGROUNDUP(p->sz) - PGROUNDUP(sz)) / PGSIZE, 1);    
+    }
   }
+  // w_satp(MAKE_SATP(p->kernelPgt));
+  // sfence_vma();
+  // kvminithart();
   p->sz = sz;
   return 0;
 }
@@ -273,7 +310,15 @@ fork(void)
     release(&np->lock);
     return -1;
   }
+
+ 
   np->sz = p->sz;
+
+  if(ukvmcopy(np->pagetable, np->kernelPgt,0,np->sz)!=0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
 
   np->parent = p;
 
@@ -453,6 +498,14 @@ wait(uint64 addr)
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
+
+// void
+// kvminithart()
+// {
+//   w_satp(MAKE_SATP(kernel_pagetable));
+//   sfence_vma();//重新加载TLB,上一步是将新的页表entry加载进satp寄存器
+// }
+
 void
 scheduler(void)
 {
@@ -471,9 +524,19 @@ scheduler(void)
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
+
+        
+
         p->state = RUNNING;
         c->proc = p;
+        // 将kernel page table 的首地址加载进satp
+        w_satp(MAKE_SATP(p->kernelPgt));
+        sfence_vma();
         swtch(&c->context, &p->context);
+
+        // 当进程执行完之后，也就是题目要求中说的when no process is running,
+        // 那么就调用kvminithart()函数，重新将全局的kernel page table 加载到satp寄存器中。
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.

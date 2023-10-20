@@ -49,6 +49,7 @@
 
 // map the trampoline page to the highest address,
 // in both user and kernel space.
+// 虚拟地址空间最大值减去一个页面 这个页面留给trampoline用
 #define TRAMPOLINE (MAXVA - PGSIZE)
 
 // map kernel stacks beneath the trampoline,

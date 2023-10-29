@@ -58,18 +58,27 @@ sys_sleep(void)
   int n;
   uint ticks0;
 
+  // 读取参数n
   if(argint(0, &n) < 0)
     return -1;
+  // 获取当前时间戳
   acquire(&tickslock);
   ticks0 = ticks;
+  // 循环n次，每次循环等待tocks0到tocks之间的差值
   while(ticks - ticks0 < n){
+    // 如果当前进程被杀死，则返回-1
     if(myproc()->killed){
       release(&tickslock);
       return -1;
     }
+
+    // 等待tocks0到tocks之间的差值
     sleep(&ticks, &tickslock);
   }
+ 
+  // 释放锁
   release(&tickslock);
+ backtrace();
   return 0;
 }
 
@@ -94,4 +103,30 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64 sys_sigreturn(void)
+{
+  struct proc* p=myproc();
+  if(p->inalarm){
+    p->inalarm=0;
+    *p->trapframe=*p->alarmframe;
+    p->tricksPassed=0;
+  }
+  return 0;
+}
+uint64 sys_sigalarm(void)
+{
+  int period;
+  uint64 handler;
+  if(argint(0, &period) < 0){
+    return -1;
+  }
+  if(argaddr(1,&handler) < 0){
+    return -1;
+  }
+  myproc()->handler=(void (*)())handler;
+  myproc()->alarmPeriod=period;
+
+  return 0;
 }

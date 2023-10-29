@@ -16,6 +16,13 @@ r_mhartid()
 #define MSTATUS_MIE (1L << 3)    // machine-mode interrupt enable.
 
 static inline uint64
+r_fp(){
+  uint64 x;
+  asm volatile("mv %0, s0":"=r"(x));
+  return x;
+}
+
+static inline uint64
 r_mstatus()
 {
   uint64 x;
@@ -114,6 +121,7 @@ w_mie(uint64 x)
 // machine exception program counter, holds the
 // instruction address to which a return from
 // exception will go.
+// 将原来程序的PC保留在sepc中，sret可以copy sepc to pc
 static inline void 
 w_sepc(uint64 x)
 {
@@ -160,6 +168,7 @@ w_mideleg(uint64 x)
 
 // Supervisor Trap-Vector Base Address
 // low two bits are mode.
+// kernel在这里写入trap handler程序， RISC-V跳到这里处理这个trap
 static inline void 
 w_stvec(uint64 x)
 {

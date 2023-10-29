@@ -63,9 +63,13 @@ usertrap(void)
     // an interrupt will change sstatus &c registers,
     // so don't enable until done with those registers.
     intr_on();
-
+    
     syscall();
+    
+    
+
   } else if((which_dev = devintr()) != 0){
+  
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
@@ -77,8 +81,19 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+      p->tricksPassed+=1;
+    if(p->inalarm==0&&p->tricksPassed==p->alarmPeriod&&p->alarmPeriod!=0){
+      // p->tricksPassed=0;
+      p->inalarm=1;
+      *p->alarmframe=*p->trapframe;
+      p->trapframe->epc = (uint64)p->handler;
+
+    }
+
     yield();
+  }
+    
 
   usertrapret();
 }
@@ -97,6 +112,7 @@ usertrapret(void)
   intr_off();
 
   // send syscalls, interrupts, and exceptions to trampoline.S
+  // trampoline在trampoline.S文件中被定义成标签指向内存中的某一位置，因此在这里使用这个返回地址
   w_stvec(TRAMPOLINE + (uservec - trampoline));
 
   // set up trapframe values that uservec will need when

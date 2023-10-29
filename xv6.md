@@ -20,8 +20,6 @@
 - 1-->标准输出
 - 2-->标准error
 
-***
-
 **pipe实质上是小的内存缓冲区**，暴露给进程两个文件描述符，一个往进写，一个往出读
 
 - fd[0]-->从管道读
@@ -48,10 +46,6 @@ if(fork() == 0) {
 ```
 
 其中close(p[0]),close(p[1])是因为p[0]已经被复制到 0 文件描述符了 然后关闭子进程中管道的读端写端 这样子进程就可以写入管道
-
-***
-
-
 
 `Mknod()` 创建的是一个设备文件
 
@@ -265,3 +259,113 @@ RISC-V的每一个CPU将 page table entries 缓存在**TLB**(Translation Look-as
 4. `walk()`是寻找到最后一级页表的函数（它只是找到了页表的首项PTE，而不是某一个mapping）。在OS中，硬件已经实现了3级pagetable的查找，那为什么我们还需要一个相同功能的walk()函数呢？因为：在xv6中，内核是有自己的页表，用户进程有自己的页表，当我们需要在内核状态访问用户进程页表中的va所对应的pa时，（此时，satp中存的已经成为内核页表了，MMU进行mapping的是内核va）就需要用walk()模拟MMU的功能。
 
 实现Lab 3的关键是要搞明白，题目要求我们干什么，xv6原来的设计是怎样的，经过我们的lab后又是这怎样的，特别是vm.c的每一个函数的运行逻辑是怎样的。搞清楚这些，就能对虚拟空间的理解深入很多。
+
+***
+
+ RISC-V与x86-64:
+
+> 后者是我们常见的电脑x86架构，64bits的处理器，前者是精简指令集，数量上较x86少很多。x86的很多指令都不止做了一件事。RISC是市场上唯一一款开源指令集
+
+ARM架构就是RISC的实现。
+
+.asm 与 .S 都是汇编文件。前者是一种通用的汇编文件，不依赖与特定的汇编器或者OS。而后者是特定于Unix/Linux OS的汇编文件。
+
+gdb调试时，(xv6)，pc出现任何0x800的地址都可以在kernel.asm中找到对应的，然后设置断点。
+
+**tui enable**
+
+![](./RISC-V_fncalling_register.png)
+
+我们在使用和谈到寄存器的时候都会用它的ABI名字，原本的名字不重要。
+
+a0~a7用来作为函数参数，若一个function有超过8个参数，就要使用内存来存放参数。
+
+**Saver**列有两个值，Caller Callee,区分这两个的方法是：前者在函数调用的时候不会保存，后者在函数调用的时候会保存。
+
+> 这里的意思是，一个Caller Saved寄存器可能被其他函数重写。假设我们在函数a中调用函数b，任何被函数a使用的并且是Caller Saved寄存器，调用函数b可能重写这些寄存器。我认为一个比较好的例子就是Return address寄存器（注，保存的是函数返回的地址），你可以看到ra寄存器是Caller Saved，这一点很重要，它导致了当函数a调用函数b的时侯，b会重写Return address。所以基本上来说，任何一个Caller Saved寄存器，作为调用方的函数要小心可能的数据可能的变化；任何一个Callee Saved寄存器，作为被调用方的函数要小心寄存器的值不会相应的变化。
+
+![](./stack.png)
+
+黑色框画出来的就是一个**栈帧(stack frame)**, 每一个function都会创建自己的frame并移动**sp(stack pointer)**来使用。**栈是从高位到低位扩张的**，因此我们可以看到入栈的时候sp都进行减操作。每一个stack frame的大小会不一样，但是**fp(frame pointer)**所指的第一个位置永远是return address，第二位置永远是上一个stack frame的位置。fp存在的意义是可以跳转回去。
+
+stack frame 必须要被汇编代码创建，所以是编译器生成了汇编代码，进而创建了stack frame。
+
+**struct在内存中是一段连续地址**，创建一个struct，里面的字段会彼此相邻，可以认为struct像是一个数组(存放方式).
+
+***
+
+导致CPU将指令的执行放到一边，强行transfer处理该事件的特殊代码上的三个事件：1.**system call** 2.**exception** 3.**interrupt**, 以上统一称为**trap**.
+
+**trap的一般流程**：trap force a transfer of control into the kernel-->kernel save register and other state to be resumed-->kernel excete appropriate handler code-->kernel restore saved state returns from the trap--->original code resumes.
+
+多核CPU上的每一个CPU都有自己的一组寄存器，同一时间可能有多个CPU在处理中断。
+
+some impoortant registers:
+
+> **stvec**:kernel将trap handler程序的地址写在这里，RISC-V跳转到这里执行。
+>
+> **sepc**: 当trap发生时，RISC-V将当前pc的值保留在这里，等待resume(也就是说kernel可以改写这个寄存器的值，让处理完trap回到其他地方)，**sret**会copy sepc to pc.
+>
+> **scause**:RISC-V在这里保存一个数，指示trap为什么发生
+>
+> **sstatus**:其中**SIE** bit 控制着设备中断是否可用，也就是在处理trap时，禁止再次发生中断。kernel clear SIE，RISC-V就会延迟设备中断。**SPP** bit指出该trap来自user mode 还是kernel mode。
+
+当RISC-V需要处理一个trap，硬件做的所有事：
+
+![](D:\mit\hw_trap.png)
+
+8.Start excuting at the new pc
+
+在处理trap时，CPU不会自己切换到内核的页表，也不会切换到内核栈，也不会保存除了pc之外的寄存器。**这些工作都需要内核的函数自己完成**。
+
+因为RISC-V硬件不会自动切换页表during a trap，所以user page table必须包含对`uservec`的mapping，在`uservec`中切换satp到 kernel page table。`uservec`也需要在kernel page table中映射到相同位置，确保执行流程可以继续。xv6为了满足这些条件，**设置了`trampoline`page 其中包含`uservec`**。在每一个user page table和kernel page table 中，trampoline page都映射在相同的虚拟地址。
+
+处理trap时，是将**registers中的值保存在内存**或者存储器中，所以先是 sd,当处理完之后，再从存储器中加载到registers ，所以是ld。（xv6中是进程的trapframe保存）
+
+**以system call作为cause梳理Xv6 trap机制**：
+
+* 总分为**7个阶段**：1.从用户态函数到**ecall** 2.执行**uservec**(保存现场，转入内核) 3.执行**usertrap**(判断中转类型，转到对应处理逻辑) 4.执行syscall(调用内核函数，完成系统调用) 5.执行**usertrapret**(设置各种值，为返回做好准备工作) 6.执行**userret**(恢复现场) 7.重返用户态执行后边指令
+
+* 1.ecall是一把钥匙，打开内核服务大门。实质上是ecall主动触发一个用户态异常，导致一系列硬件trap动作：![hw_trap](D:\mit\hw_trap.png)
+
+  这些步骤跟上一个图逻辑是一样的，需要注意，这些动作是**硬件处理trap的自动动作**（硬件电路完成），无论触发trap的原因是什么。
+
+* 2.执行uservec这一阶段与执行userret相互呼应，都是**trampoline.S**里的两个函数，而之前我们从进程的用户地址空间和内核的地址空间，**高地址处都有一页指向这段代码**，因此，这两个函数才可以在用户态和内核态切换之后还能正确识别到地址，正常运行。
+
+  这个阶段就是将寄存器的各种值存在进程的**trapframe**中，这个trapframe是每个进程被创建时分配的一页专门用来存放上下文状态的内存。完了所有寄存器的存储，接下来就要切换到内核态，首先设置内核栈指针(每个进程都有自己的内核栈指针在结构体里存着，只需要把它加载到sp寄存器即可), 再将其余**信息加载到对应寄存器**中。下一步**跳转到usertrap**执行。
+
+* 3.执行usertrap，这一阶段简单概括就是，通过判断这个trap的原因是什么，是syscall，device interrupt，还是exception,分别**转到各自的处理程序**。
+
+* 4.我们以syscall举例，这里就是跳转到调用内核函数完成功能。
+
+* 5.执行userret, 首先设置stvec的值到uservec（ps:会疑问？我都到这一步了才设置stevc的值？那我怎样执行的第二阶段？事实上在fork进程的时候必定会返回这里，在那时就已经设置好了  *fork不也是会调用ecall然后走这个流程么 那当时怎样确定的stevc的值？*）, 设置trapframe中有关内核的值，为下一次的trap做准备，设置sepc，准备调回至原先的地方，调用userret.
+
+* 6.执行userret，恢复现场。将sepc中的值放入pc，将trapframe中存的值加载进寄存器，以及切换回用户页表，通过最后一条指令**sret返回到用户模式**。
+
+* 7.现在已经回到了用户模式，且pc指向的是ecall指令的下一条，执行后续。
+
+trap from kernel space:大体过程与from user space差不多，不同的是，此时OS就处于内核态，一是不用切换页表，不用切换栈，直接对应着找到kernelvec之后就可以开始保存上下文，然后进行kerneltrap，只不过这里的trap只分为device trap和exceptions了。
+
+在我们了解trap机制的时，不难发现，trap from user space处理起来比较麻烦，因为需要考虑到页表的不同，需要重新寻址。因此在**现实世界中，许多OS就会将内核内存的PTE映射到用户页表页面中**，（类似上一个lab做得事情）使其处理trap提高效率。但**Xv6为了避免用户直接操作kernel造成安全bug，取消掉了这样的设置**。
+
+***
+
+## Lecture 6
+
+usertrap()中有一句`p->trapframe->epc=r_sepc()`就是将存在sepc里的pc值又存在trapframe里。那为什么不一开始在存寄存器的时候就直接存进trapframe，而是要在sepc中暂存？
+
+> 因为存寄存器的时候是在trampoline阶段，此时pc是指向uservec的（硬件自动指向），因此为了能进入这个阶段就需要将原来的pc暂存一下，进入了这个阶段之后取出来存。
+
+在RISC-V标准中，**异常**(exception)是当前CPU运行时遇到的与**指令有关**的不寻常情况，**中断**(interrupt)是因为**外部异步信号**引起的控制流脱离当前CPU事件。而**trap表示的则是由异常和中断引起的控制权转移到陷阱处理程序的过程**。
+
+***
+
+## Lab 4
+
+我觉得这个实验以及课程实质上是让我们搞明白，syscall如何让内核trap，以及又如何恢复，这个过程我在上面叙述的很清楚了。但是关于实验，做得却不是很好。
+
+1. backtrace这个实验就是让我们加深stack frame的作用以及结构，当调用一个函数时，首先会为其创建一个stack frame，值得注意的点是，整个栈是由高地址到低地址分布，而sp指的是栈顶也就是栈所在页的中间部分（栈里存有东西）。
+2. alarm这个实验是实现一个系统调用，可以让kernel每隔一段时间去执行一个用户级函数，整体做下来，给我的感受就是逻辑性很强，必须要对你要干什么清清楚楚，以及很好理解trap这个过程。
+
+***
+

@@ -311,7 +311,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -327,13 +327,9 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if(mappages(new, i, PGSIZE, (uint64)pa, flags)!=0){
       goto err;
     }
-    // if((mem = kalloc()) == 0)
-    //   goto err;
-    // memmove(mem, (char*)pa, PGSIZE);
-    // if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-    //   kfree(mem);
-    //   goto err;
-    // }
+
+    adjustref(pa,1);
+
   }
   return 0;
 
@@ -355,6 +351,36 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
+
+
+int
+ cowalloc(pagetable_t pagetable, uint64 va) {
+  if (va >= MAXVA) {
+    printf("cowalloc: exceeds MAXVA\n");
+    return -1;
+  }
+
+  pte_t* pte = walk(pagetable, va, 0); // should refer to a shared PA
+  if (pte == 0) {
+    return -1;
+    // panic("cowalloc: pte not exists");
+  }
+  if ((*pte & PTE_U) == 0 || (*pte & PTE_V) == 0) {
+    return -1;
+    // panic("cowalloc: pte permission err");
+  }
+  uint64 pa_new = (uint64)kalloc();
+  if (pa_new == 0) {
+    printf("cowalloc: kalloc fails\n");
+    return -1;
+  }
+  uint64 pa_old = PTE2PA(*pte);
+  memmove((void *)pa_new, (const void *)pa_old, PGSIZE);
+  kfree((void *)pa_old); // 减少COW页面的reference count
+  *pte = PA2PTE(pa_new) | PTE_FLAGS(*pte) | PTE_W;
+  return 0;
+}
+
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
@@ -365,9 +391,26 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if (va0 >= MAXVA) {
+      printf("copyout: va exceeds MAXVA\n");
       return -1;
+    }
+    pte_t *pte = walk(pagetable, va0, 0);
+    if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0) {
+      printf("copyout: invalid pte\n");
+      return -1;
+    }
+    if ((*pte & PTE_W) == 0) {
+      // 写的目的地是COW共享页, 需要复制一份
+        if(cowalloc(pagetable, va0) <0){
+          return -1;
+        }
+      
+    }
+    pa0=PTE2PA(*pte);
+    // pa0 = walkaddr(pagetable, va0);
+    // if(pa0 == 0)
+    //   return -1;
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

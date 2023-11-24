@@ -553,3 +553,76 @@ kill系统调用只是将进程的killed设置为1，并且如果该进程正在
 这个Lab的主题是Locks, 一共两个实验，第一个是memory allocator. 是说原先设计的内存分配是有一个大锁在分配和释放内存时候，因为每个CPU物理和理论上都是一整片大内存，所以上大锁保护。实验要求我们给每一个CPU核拥有自己的freelist，并且自己的freelist有自己的锁，因此，每个CPU核在分配释放内存的时候就不会因为等待锁而耗时。
 
 第二个实验与第一个实验类似，是buffer cache的锁机制修改，原先有一个大锁来管理，现在要求我们利用hash table实现更为细致的管理，每一个bucket都有着自己的锁，因此访问这个buffercache区域就可以多线程并行，如果访问的不是一个bucket里的话。再者就是丢弃原来的双链表实现LRU策略，直接改为时间戳，更为方便。
+
+***
+
+## Lecture 12
+
+xv6的块分配器会在磁盘上用一个磁盘块维护位图，当需要分配的时候，会循环找到一个对应位图位是0的，表明这个块是空闲的。
+
+sector扇区是磁盘读取的最小单位，一般为512B，而block是OS和FS的视角，由FS定义，通常一个block对应了一个或多个sector。
+
+但有时人们也习惯在磁盘上的扇区称呼为block
+
+从FS的角度来看磁盘，很简单，就是一个巨大的block数组。
+
+![Disk_layout](D:\mit\Disk_layout.PNG)
+
+block0 通常被用来装载boot代码，启动OS的。block1被称为super block，描 述了FS,比如FS的大小，块大小，块数量、块位图等。接下来是log区域。
+
+紧接着是Inodes区域，里面存储了iNode，在xv6中我们可以看到一个iNode大小是64B，一共用了45-32=13个block存储iNode，每一个block大小是512B，所以可计算，FS共有多少个iNode。*每一个文件都有一个INode，包含文件的元数据，还包含了指向文件数据块的指针，因此文件实际内容存储在对应的data block中*
+
+紧接着一个block是bitMap位图，记录数据block是够空闲，在bitMap后面的块都是数据block了。
+
+每一个iNode的结构如下：
+
+![Disk_Inode](D:\mit\Disk_Inode.PNG)
+
+type是标明iNode是文件还是目录，nlink字段就是link计数器，标明有多少的文件名指向了当前的iNode，size指明文件数据有多少字节。不同FS表达可能不一样，在这里会有12个address指向data block，这些就是直接块索引。后边还有一个块是间接块索引，因为它存储了一个data block地址，而这个block不存储data存储了另外256个block的地址，它就相当于一个table一样，查询用的。这样文件最大才有(256+12)x1024大小，不够的话将直接索引块中的一个转换为间接索引块。
+
+对于block cache有几点需要注意：
+
+* 一个block在buffer中只能有一份缓存
+* 有两层锁，第一层是保护buffer cache的内部数据；第二层是sleep lock用来保护单个block cache
+* 当一个block的引用计数降为0，也就是无进程正在使用这个块，这个块并不会被立刻移除，而是放到最开始的位置。
+
+ 为解决crash recovery问题，常使用**logging技术**，主要有3点：1. 关于文件系统调用的原子操作 2. 快速恢复 3. 高性能(xv6中未实现，linux的ext3实现了)
+
+ log的基本思想很简单，就是原本要直接写入data block中的，我先写到log里，等这一组写入都完成了，我再从log中复制到真正的block中。分为4个步骤：**1.log write 2.commit op 3. install 4. clean log**
+
+commit op过程中发生crash会怎样处理？实际上commit op只是将log此时的长度写入到logheader中，若成功后crash那么下次reboot就会知道有commit未install，若为成功crash，那么reboot此时读取到的logheader中commit就是0，不会install。
+
+如果在install过程中crash怎么处理？这时候log中已经记录了需要写入的块，重复写进去也是没关系的。
+
+Xv6中，内存中会有一份logHeader的拷贝，里面就是有效的log block数量，以及block编号数组
+
+使用log的文件系统有着三个挑战：1.cache eviction：
+
+> 当buffer cache满了，但是我们的事务还有需要的块写入，此时若是将之前写入的块踢出cache，写回磁盘就会破坏事务的原子性，即事务里涉及的所有块要么都写入要么都不写入。
+>
+> 这个时候解决使用pin与unpin，pin通过给cache块加ref使其不会被踢出。
+
+2. logsize是有限制的，比如在xv6中是30个block，若是有一个文件有1000个block要写入怎样处理？
+
+> 如果写入的block超过了logsize，那么就会将一个写操作拆分成多个写操作，这里破坏原子性了吗？意义上是破坏了，但我们不损坏整个文件写入就可以，每一次的写入操作的那几个块都是原子的
+
+3. 并发文件系统调用
+
+> 这里比如说有进程a与进程b，两个事务各需要写20个logblock，但此时a写了15个b写了15个，log已经满了，但两个事务还未结束，那怎样处理？
+>
+> 当我们还没有完成一个文件系统操作时，我们必须在确保可能写入的总的log数小于log区域的大小的前提下，才允许另一个文件系统操作开始。
+>
+> 若a与b各自写了5个，然后都写完了，这样会作为一个group commit来提交，一样的保持原子性。要么都成功，要么一个都不提交
+
+***
+
+## Lab 9
+
+有两个实验，第一个是让我们修改xv6的inode结构，原本只有一个间接索引，现在修改的要添加一个间接间接索引，要划出一个直接索引块去做这个。还有当通过bmap要找到对应iNode节点号时，若是在二级间接索引，要能找到它。
+
+第二个实验是实现symbloic link 也就是软连接，创建一个iNode里面存储的是target的地址，是open软连接文件的时候识别出这个iNode是软连接文件，然后去访问到真正的iNode。这个实验确实有点难，因为我不清楚iNode的相关函数操作。看着答案也有一点懵逼
+
+***
+
+## Lecture 13
+

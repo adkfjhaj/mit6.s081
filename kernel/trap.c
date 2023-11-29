@@ -1,14 +1,14 @@
 #include "types.h"
+#include "fcntl.h"
 #include "param.h"
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
 #include "proc.h"
 #include "defs.h"
 #include "fs.h"
-#include "sleeplock.h"
 #include "file.h"
-#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -53,7 +53,7 @@ usertrap(void)
   
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
+
   if(r_scause() == 8){
     // system call
 
@@ -115,9 +115,8 @@ usertrap(void)
     }
 
   } else if((which_dev = devintr()) != 0){
-    // ok
-  }
-  else {
+      // ok
+  } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

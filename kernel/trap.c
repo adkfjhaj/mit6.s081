@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -65,9 +69,55 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(r_scause() == 13 || r_scause() == 15) {
+    uint64 va = r_stval();
+    struct proc* p = myproc();
+    if (va > MAXVA || va > p->sz) {
+      // sanity check
+      p->killed = 1;
+    } else {
+      int found = 0;
+      for (int i = 0; i < NVMA; i++) {
+        struct vma* vma = &p->vmas[i];
+        if (vma->valid && va >= vma->addr && va < vma->addr+vma->length) {
+          // find the matching vma, allocate a physical page
+          // map the file content into the page and insert into p's pagetable
+          va = PGROUNDDOWN(va);
+          uint64 pa = (uint64)kalloc();
+          if (pa == 0) {
+            break;
+          }
+          memset((void *)pa, 0, PGSIZE);
+          ilock(vma->f->ip);
+          if(readi(vma->f->ip, 0, pa, vma->offset + va - vma->addr, PGSIZE) < 0) {
+            iunlock(vma->f->ip);
+            break;
+          }
+          iunlock(vma->f->ip);
+          int perm = PTE_U;
+          if (vma->prot & PROT_READ)
+            perm |= PTE_R;
+          if (vma->prot & PROT_WRITE)
+            perm |= PTE_W;
+          if (vma->prot & PROT_EXEC)
+            perm |= PTE_X;
+          if (mappages(p->pagetable, va, PGSIZE, pa, perm) < 0) {
+            kfree((void*)pa);
+            break;
+          }
+          found = 1;
+          break;
+        }
+      }
+
+      if (!found)
+        p->killed = 1;
+    }
+
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
